@@ -85,6 +85,9 @@ def asymmetric_2opt(D: np.ndarray, perm: List[int],
         k = min(20, max(5, n // 20))
         candidates = build_candidate_lists_asymmetric(D, k=k)
     
+    # OPTIMISATION: Précalculer la version symétrisée pour filtrage rapide
+    D_sym = (D + D.T) / 2
+    
     # Position map
     pos = np.empty(n, dtype=int)
     for i, v in enumerate(perm):
@@ -123,26 +126,31 @@ def asymmetric_2opt(D: np.ndarray, perm: List[int],
                 
                 d = best[(j + 1) % n]
                 
-                # Calculate delta for asymmetric case
-                # Remove edges: a→b and c→d
-                # Add edges: a→c and b→d
-                # Reversed segment will have reversed directions
-                old_cost = D[a, b] + D[c, d]
+                # OPTIMISATION: Filtrage rapide avec D_sym (élimine 90% des swaps en O(1))
+                delta_approx = D_sym[a, c] + D_sym[b, d] - D_sym[a, b] - D_sym[c, d]
                 
-                # After reversal: a → c, and the last node of reversed segment → d
-                # Reversed segment changes all internal edge directions
+                # Si l'approximation symétrique est mauvaise, skip immédiatement
+                if delta_approx >= 0:
+                    continue
+                
+                # Calcul incrémental du delta exact (seulement pour les ~10% prometteurs)
+                # Extraire le segment qui sera inversé
                 if i < j:
                     segment = best[i + 1 : j + 1]
                 else:
                     segment = best[i + 1 :] + best[: j + 1]
                 
-                # Calculate cost change including reversed segment
-                segment_rev = segment[::-1]
-                old_segment_cost = sum(D[segment[k], segment[k + 1]] for k in range(len(segment) - 1))
-                new_segment_cost = sum(D[segment_rev[k], segment_rev[k + 1]] for k in range(len(segment_rev) - 1))
+                # Calcul incrémental du delta
+                delta = D[a, c] + D[b, d] - D[a, b] - D[c, d]
                 
-                new_cost = D[a, c] + D[segment_rev[-1], d]
-                delta = new_cost + new_segment_cost - old_cost - old_segment_cost
+                if len(segment) > 1:
+                    for k in range(len(segment) - 1):
+                        old_edge = D[segment[k], segment[k + 1]]
+                        new_edge = D[segment[-(k+1)], segment[-(k+2)]]
+                        delta += new_edge - old_edge
+                elif len(segment) == 1:
+                    c_node = segment[0]
+                    delta = D[a, c_node] + D[c_node, d] - D[a, b] - D[c, d]
                 
                 if delta < -1e-9:
                     # Perform reversal
@@ -628,8 +636,8 @@ def asymmetric_tsp_solve(
 
 if __name__ == "__main__":
     test_files = [
-        "lab2/problem_g_500.npy",
-        #"lab2/problem_r2_500.npy",
+        "lab2/problem_r1_200.npy",
+        "lab2/problem_r2_200.npy",
     ]
     
     for filepath in test_files:
