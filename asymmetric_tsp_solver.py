@@ -33,6 +33,57 @@ def tour_cost(D: np.ndarray, perm: List[int]) -> float:
     return float(cost)
 
 
+def exact_2opt_delta(D: np.ndarray, perm: List[int], i: int, j: int) -> float:
+    """Compute the exact cost delta for doing a directional 2-opt between indices i and j on perm.
+
+    This centralizes the exact asymmetric delta computation so callers can rely on a single
+    correct implementation. Assumes i and j are not adjacent (and not equal).
+    """
+    # Minimal, easy-to-audit implementation: build the tour after reversal and
+    # compute the cost difference via the existing tour_cost helper.
+    n = len(perm)
+    if i < j:
+        new_perm = perm[:i+1] + perm[i+1:j+1][::-1] + perm[j+1:]
+    else:
+        seg = perm[i+1:] + perm[:j+1]
+        seg_rev = seg[::-1]
+        new_perm = seg_rev[len(seg_rev) - (n - (i+1)):] + seg_rev[:len(seg_rev) - (n - (i+1))]
+
+    return tour_cost(D, new_perm) - tour_cost(D, perm)
+
+
+def validate_and_repair_tour(tour: List[int], n: int) -> Tuple[List[int], bool]:
+    """Ensure tour is a permutation of 0..n-1. If not, deterministically repair it.
+
+    Repair strategy:
+    - Keep the first occurrence of each valid node in the provided tour
+    - Append any missing nodes in ascending order
+    Returns: (repaired_tour, repaired_flag)
+    """
+    seen = set()
+    new_tour: List[int] = []
+    repaired = False
+    for v in tour:
+        try:
+            vi = int(v)
+        except Exception:
+            repaired = True
+            continue
+        if 0 <= vi < n and vi not in seen:
+            seen.add(vi)
+            new_tour.append(vi)
+        else:
+            repaired = True
+
+    # append missing nodes in ascending order
+    for v in range(n):
+        if v not in seen:
+            new_tour.append(v)
+            repaired = True
+
+    return new_tour, repaired
+
+
 def nearest_neighbor_start(D: np.ndarray, start: int = 0) -> List[int]:
     """Greedy nearest neighbor (asymmetric-aware)."""
     n = D.shape[0]
@@ -132,26 +183,9 @@ def asymmetric_2opt(D: np.ndarray, perm: List[int],
                 # Si l'approximation symétrique est mauvaise, skip immédiatement
                 if delta_approx >= 0:
                     continue
-                
-                # Calcul incrémental du delta exact (seulement pour les ~10% prometteurs)
-                # Extraire le segment qui sera inversé
-                if i < j:
-                    segment = best[i + 1 : j + 1]
-                else:
-                    segment = best[i + 1 :] + best[: j + 1]
-                
-                # Calcul incrémental du delta
-                delta = D[a, c] + D[b, d] - D[a, b] - D[c, d]
+                # Compute exact delta in a single, centralized helper (per review.md)
+                delta = exact_2opt_delta(D, best, i, j)
 
-                if len(segment) > 1:
-                    for k in range(len(segment) - 1):
-                        old_edge = D[segment[k], segment[k + 1]]
-                        new_edge = D[segment[-(k+1)], segment[-(k+2)]]
-                        delta += new_edge - old_edge
-                elif len(segment) == 1:
-                    c_node = segment[0]
-                    delta = D[a, c_node] + D[c_node, d] - D[a, b] - D[c, d]
-                
                 if delta < -1e-9:
                     # Perform reversal
                     if i < j:
@@ -163,9 +197,9 @@ def asymmetric_2opt(D: np.ndarray, perm: List[int],
                         best[i + 1 :] = segment_reversed[:len_tail]
                         best[: j + 1] = segment_reversed[len_tail:]
                     
-                    # Update pos
-                    for idx in range(n):
-                        pos[best[idx]] = idx
+                    # Update pos (use enumerate for clarity and speed)
+                    for idx, val in enumerate(best):
+                        pos[val] = idx
                     
                     best_cost = tour_cost(D, best)  # Recalculate to avoid numerical drift
                     improvements = 1
@@ -605,6 +639,10 @@ def asymmetric_tsp_solve(
     
     # Step 4: Merge
     merged_tour, merge_cost = merge_clusters_asymmetric(D, cluster_tours, verbose=verbose)
+    # Validate merged tour is a proper permutation and deterministically repair if needed
+    merged_tour, repaired = validate_and_repair_tour(merged_tour, n)
+    if repaired and verbose:
+        print("Warning: merged tour was not a permutation; repaired deterministically.")
     
     # Step 5: Final refinement
     if verbose:
